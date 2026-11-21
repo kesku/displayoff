@@ -22,6 +22,18 @@ static BOOL owns_blank_mutex;
 static BOOL blank_pending;
 static BOOL hotkey_down;
 static BOOL tray_ready;
+static BOOL tray_v4;
+static DWORD last_click;
+static BOOL saw_click;
+
+static BOOL add_tray(void)
+{
+    if (!Shell_NotifyIconW(NIM_ADD, &tray))
+        return FALSE;
+    tray.uVersion = NOTIFYICON_VERSION_4;
+    tray_v4 = Shell_NotifyIconW(NIM_SETVERSION, &tray);
+    return TRUE;
+}
 
 static void notice(const wchar_t *message)
 {
@@ -125,16 +137,40 @@ static void tray_menu(HWND hwnd)
 static LRESULT CALLBACK handle_message(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 {
     if (taskbar_created && message == taskbar_created) {
-        tray_ready = Shell_NotifyIconW(NIM_ADD, &tray);
+        tray_ready = add_tray();
         return 0;
     }
 
     switch (message) {
     case TRAY_MESSAGE:
-        if (lparam == WM_LBUTTONDBLCLK)
+        switch (LOWORD(lparam)) {
+        case WM_LBUTTONDBLCLK:
+        case NIN_KEYSELECT:
+            saw_click = FALSE;
             start_blank(hwnd);
-        if (lparam == WM_RBUTTONUP)
+            break;
+        case WM_LBUTTONUP: {
+            if (blank_pending)
+                break;
+            DWORD now = GetMessageTime();
+            if (saw_click && now - last_click <= GetDoubleClickTime()) {
+                saw_click = FALSE;
+                start_blank(hwnd);
+            } else {
+                last_click = now;
+                saw_click = TRUE;
+            }
+            break;
+        }
+        case WM_RBUTTONUP:
+            if (tray_v4)
+                break;
+            /* fall through */
+        case WM_CONTEXTMENU:
+            saw_click = FALSE;
             tray_menu(hwnd);
+            break;
+        }
         return 0;
     case BLANK_MESSAGE:
         start_blank(hwnd);
@@ -207,13 +243,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR args, int show
         tray.cbSize = sizeof tray;
         tray.hWnd = window;
         tray.uID = ICON_RESOURCE;
-        tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+        tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
         tray.uCallbackMessage = TRAY_MESSAGE;
         tray.hIcon = LoadImageW(instance, MAKEINTRESOURCEW(ICON_RESOURCE),
             IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
             LR_SHARED);
         lstrcpyW(tray.szTip, title);
-        tray_ready = Shell_NotifyIconW(NIM_ADD, &tray);
+        tray_ready = add_tray();
         if (tray_ready) {
             keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, hotkey, instance, 0);
             if (!keyboard)
